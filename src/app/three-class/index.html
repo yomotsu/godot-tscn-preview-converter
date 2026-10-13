@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Three.js VFX Class Preview</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050505;color:#eaf0ff;font:14px/1.5 system-ui,-apple-system,sans-serif}canvas{display:block;width:100%;height:100%}#panel{position:fixed;z-index:1;top:18px;left:18px;width:min(390px,calc(100vw - 36px));padding:16px 18px;background:rgba(12,18,30,.88);border:1px solid rgba(176,202,255,.2);border-radius:12px;box-shadow:0 12px 40px #0007;backdrop-filter:blur(12px)}h1{font-size:16px;margin:0 0 8px}.row{display:flex;gap:8px;align-items:center;margin:8px 0}button,input{font:inherit}button{background:#19243a;color:#eaf0ff;border:1px solid #354360;border-radius:6px;padding:7px 10px;cursor:pointer}button:disabled{opacity:.5;cursor:default}input[type=file]{width:100%;font-size:12px}input[type=range]{flex:1;min-width:50px}#status{font-size:12px;color:#aab8d4;white-space:pre-wrap;overflow-wrap:anywhere}#error{font-size:12px;color:#ff9ca7;white-space:pre-wrap;overflow-wrap:anywhere;max-height:30vh;overflow:auto}#help{position:fixed;right:16px;bottom:14px;color:#97a7c4;font-size:12px;text-shadow:0 1px 4px #000}
+  </style>
+  <script type="importmap">
+    {"imports":{"three":"/vendor/three/build/three.module.js","three/webgpu":"/vendor/three/build/three.webgpu.js","three/tsl":"/vendor/three/build/three.tsl.js","three/addons/":"/vendor/three/examples/jsm/"}}
+  </script>
+</head>
+<body>
+  <section id="panel">
+    <h1>書き出した Three.js VFX クラス</h1>
+    <div class="row"><input id="file" type="file" accept=".js,text/javascript,application/javascript"></div>
+    <div class="row"><button id="restart" disabled>最初から再生</button><label for="speed">速度</label><input id="speed" type="range" min="0.1" max="2" step="0.05" value="1"><output id="speedValue">1.00×</output></div>
+    <div id="status">AbstractVFXMesh.min.js を読み込み済みです。クラスの .js ファイルを選択してください。</div>
+    <div id="error"></div>
+  </section>
+  <div id="help">ドラッグで視点移動・ホイールでズーム</div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { GodotDepthPass, GodotOutputPass, GodotEnvironmentConverter } from '../../index.ts';
+    import { getPreviewCameraClipRange, getPreviewFogScale } from '../camera-clip-range.js';
+
+    const fileInput = document.querySelector('#file');
+    const restartButton = document.querySelector('#restart');
+    const speedInput = document.querySelector('#speed');
+    const speedValue = document.querySelector('#speedValue');
+    const status = document.querySelector('#status');
+    const error = document.querySelector('#error');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x050505);
+    scene.fog = new THREE.FogExp2(0x050505, 0.022);
+    const ambient = new THREE.HemisphereLight(0xffffff, 0x202020, 0.65);
+    scene.add(ambient);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1);
+    keyLight.position.set(5, 9, 4);
+    scene.add(keyLight);
+    // Viewer-only checker floor; the downloaded effect class never contains this scene decoration.
+    const tiles = document.createElement('canvas'); tiles.width = tiles.height = 128;
+    const tileContext = tiles.getContext('2d'); tileContext.fillStyle = '#535353'; tileContext.fillRect(0, 0, 128, 128); tileContext.fillStyle = '#383838'; tileContext.fillRect(0, 0, 64, 64); tileContext.fillRect(64, 64, 64, 64);
+    const checker = new THREE.CanvasTexture(tiles); checker.colorSpace = THREE.SRGBColorSpace; checker.wrapS = checker.wrapT = THREE.RepeatWrapping; checker.repeat.set(250, 250);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshStandardMaterial({ map: checker, roughness: 0.5, metalness: 0 })); floor.rotation.x = -Math.PI / 2; floor.position.y = -0.01; scene.add(floor);
+    const shadowCanvas = document.createElement('canvas'); shadowCanvas.width = shadowCanvas.height = 128;
+    const shadowContext = shadowCanvas.getContext('2d'), shadowGradient = shadowContext.createRadialGradient(64, 64, 5, 64, 64, 64); shadowGradient.addColorStop(0, 'rgba(0,0,0,.5)'); shadowGradient.addColorStop(1, 'rgba(0,0,0,0)'); shadowContext.fillStyle = shadowGradient; shadowContext.fillRect(0, 0, 128, 128);
+    const contact = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shadowCanvas), transparent: true, depthWrite: false })); contact.rotation.x = -Math.PI / 2; contact.position.y = 0.002; scene.add(contact);
+
+    const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.01, 120);
+    camera.position.set(5, 3.3, 13);
+    const clock = new THREE.Clock();
+    let effect = null;
+    let activeRenderer = null;
+    let activeRendererTarget = '';
+    let controls = null;
+    let playing = true;
+    let activeModuleUrl = '';
+    let composer = null, glow = null, output = null;
+    let webgpuPipeline = null, webgpuExposure = null, webgpuBloom = null, webgpuDepthTexture = null;
+    const sharedRuntimeModuleUrl = new URL('/three-class/AbstractVFXMesh.min.js', location.href).href;
+    const { AbstractVFXMesh } = await import(/* @vite-ignore */ sharedRuntimeModuleUrl);
+    const depthPass = new GodotDepthPass();
+    let cameraSceneExtent = 0;
+    if (typeof AbstractVFXMesh !== 'function') throw new Error('AbstractVFXMesh.min.js にクラスがありません。');
+
+    async function setRenderer(target) {
+      if (activeRenderer && activeRendererTarget === target) return;
+      let nextRenderer;
+      let nextWebgpuPipeline = null, nextWebgpuExposure = null, nextWebgpuBloom = null, nextWebgpuDepthTexture = null;
+      if (target === 'WebGPURenderer') {
+        if (!navigator.gpu) throw new Error('このブラウザまたは端末では WebGPU が利用できません。WebGL class を書き出してください。');
+        const gpu = await import('three/webgpu');
+        const tsl = await import('three/tsl');
+        const { bloom } = await import('three/addons/tsl/display/BloomNode.js');
+        nextRenderer = new gpu.WebGPURenderer({ antialias: true, alpha: false });
+        await nextRenderer.init();
+        const scenePass = tsl.pass(scene, camera);
+        const sceneColor = scenePass.getTextureNode();
+        nextWebgpuDepthTexture = scenePass.getTextureNode('depth').value;
+        nextWebgpuExposure = tsl.uniform(1.3);
+        nextWebgpuBloom = bloom(sceneColor, 0, 0.3, 1);
+        nextWebgpuPipeline = new gpu.RenderPipeline(nextRenderer);
+        nextWebgpuPipeline.outputNode = createGodotOutputNode(tsl, sceneColor.add(nextWebgpuBloom), nextWebgpuExposure);
+        nextWebgpuPipeline.outputColorTransform = false;
+      } else {
+        nextRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      }
+      nextRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      nextRenderer.setSize(innerWidth, innerHeight);
+      nextRenderer.outputColorSpace = THREE.SRGBColorSpace;
+      nextRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+      nextRenderer.toneMappingExposure = 1.3;
+      if (activeRenderer) {
+        activeRenderer.setAnimationLoop(null);
+        controls.dispose();
+        composer?.dispose();
+        webgpuPipeline?.dispose();
+        activeRenderer.domElement.replaceWith(nextRenderer.domElement);
+        activeRenderer.dispose();
+      } else {
+        document.body.appendChild(nextRenderer.domElement);
+      }
+      activeRenderer = nextRenderer;
+      activeRendererTarget = target;
+      webgpuPipeline = nextWebgpuPipeline;
+      webgpuExposure = nextWebgpuExposure;
+      webgpuBloom = nextWebgpuBloom;
+      webgpuDepthTexture = nextWebgpuDepthTexture;
+      if (target !== 'WebGPURenderer') checker.anisotropy = activeRenderer.capabilities.getMaxAnisotropy();
+      composer = null; glow = null; output = null;
+      if (target !== 'WebGPURenderer') {
+        composer = new EffectComposer(activeRenderer);
+        composer.addPass(new RenderPass(scene, camera));
+        glow = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.2, 0.3, 1);
+        glow.enabled = false;
+        composer.addPass(glow);
+        output = new GodotOutputPass(1.3);
+        composer.addPass(output);
+      }
+      controls = new OrbitControls(camera, activeRenderer.domElement);
+      controls.enableDamping = true;
+      controls.minDistance = 0.1;
+    }
+
+    function removeEffect() {
+      if (!effect) return;
+      scene.remove(effect);
+      effect.dispose?.();
+      effect = null;
+      restartButton.disabled = true;
+    }
+
+    function frameEffect(instance) {
+      instance.updateTime?.(0);
+      const id = instance.constructor.previewId || instance.previewId || '';
+      const isNuke = id.includes('nuke'), height = id.includes('air') ? 2 : 0;
+      instance.position.set(0, instance.constructor.previewRootPositionAnimated ? 0 : height, 0);
+      controls.target.set(0, isNuke ? 4 : 0.35 + height, 0);
+      camera.position.set(isNuke ? 14 : 5, isNuke ? 10 : 3.3 + height, isNuke ? 36 : 13);
+      camera.near = 0.01;
+      camera.far = 120;
+      camera.updateProjectionMatrix();
+      controls.minDistance = 0.5;
+      cameraSceneExtent = measureVisibleSceneExtent(instance.effectRoot ?? instance, controls.target);
+      controls.maxDistance = Math.max(24, cameraSceneExtent * 8);
+      const environment = instance.previewEnvironment;
+      floor.visible = !environment;
+      ambient.visible = keyLight.visible = !environment;
+      contact.visible = !environment;
+      contact.position.x = 0;
+      contact.scale.setScalar(isNuke ? 2 : 1);
+      scene.background = new THREE.Color(0x050505);
+      scene.environment = null;
+      scene.fog = new THREE.FogExp2(0x050505, 0.022);
+      scene.backgroundIntensity = scene.environmentIntensity = 1;
+      scene.backgroundRotation.set(0, 0, 0);
+      scene.environmentRotation.set(0, 0, 0);
+      delete scene.userData.godotEnvironment;
+      if (environment) GodotEnvironmentConverter.apply(scene, environment);
+      if (output) output.uniforms.exposure.value = environment?.exposure ?? 1.3;
+      if (glow) { glow.enabled = Boolean(environment?.glow); glow.strength = environment?.glowBloom ?? 0.2; }
+      if (webgpuExposure) webgpuExposure.value = environment?.exposure ?? 1.3;
+      if (webgpuBloom) webgpuBloom.strength.value = environment?.glow ? environment.glowBloom : 0;
+      controls.update();
+      updateCameraClipRange();
+    }
+
+    function updateCameraClipRange() {
+      if (!controls) return;
+      const distance = camera.position.distanceTo(controls.target);
+      const range = getPreviewCameraClipRange(distance, cameraSceneExtent);
+      if (Math.abs(camera.near - range.near) > 1e-5 || Math.abs(camera.far - range.far) > 1e-3) {
+        camera.near = range.near; camera.far = range.far; camera.updateProjectionMatrix();
+      }
+      updatePreviewFog(distance + cameraSceneExtent);
+    }
+
+    function updatePreviewFog(viewDistance) {
+      const environment = scene.userData.godotEnvironment;
+      const surfaceDensity = environment ? (environment.fogDensity || environment.volumetricDensity) : 0.022;
+      const fogDensity = environment?.fogDensity ?? 0;
+      const volumeDensity = environment?.volumetricDensity ?? 0;
+      const scale = environment
+        ? getPreviewFogScale(viewDistance, fogDensity, volumeDensity)
+        : getPreviewFogScale(viewDistance, surfaceDensity, 0);
+      scene.userData.godotPreviewFogScale = scale;
+      if (scene.fog) scene.fog.density = surfaceDensity * scale;
+    }
+
+    function createGodotOutputNode(TSL, input, exposure) {
+      const curve = TSL.Fn(([x]) => x.mul(x.add(0.0245786)).sub(0.000090537)
+        .div(x.mul(x.mul(0.983729).add(0.432951)).add(0.238081)));
+      const whiteCurve = (1.8 * (1.8 + 0.0245786) - 0.000090537)
+        / (1.8 * (0.983729 * 1.8 + 0.432951) + 0.238081);
+      const inputMatrix = TSL.mat3(0.59719, 0.07600, 0.02840, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777);
+      const outputMatrix = TSL.mat3(1.60475, -0.10208, -0.00327, -0.53108, 1.10813, -0.07276, -0.07367, -0.00605, 1.07602);
+      return TSL.Fn(([pixel]) => {
+        let color = TSL.max(pixel.rgb.mul(exposure), TSL.vec3(0));
+        color = outputMatrix.mul(curve(inputMatrix.mul(color).mul(1.8)));
+        color = TSL.clamp(color.div(whiteCurve), 0, 1);
+        const srgb = TSL.mix(color.mul(12.92), color.pow(TSL.vec3(1 / 2.4)).mul(1.055).sub(0.055), TSL.step(TSL.vec3(0.0031308), color));
+        return TSL.vec4(srgb, pixel.a);
+      })(input);
+    }
+
+    function updateWebgpuDepthUniforms() {
+      if (!webgpuDepthTexture || !effect) return;
+      const size = activeRenderer.getDrawingBufferSize(new THREE.Vector2());
+      effect.effectRoot?.traverse((object) => {
+        const materials = Array.isArray(object.material) ? object.material : object.material ? [object.material] : [];
+        for (const material of materials) {
+          const names = material.userData?.godotDepthUniforms ?? [];
+          const uniforms = material.userData?.godotShaderUniforms ?? material.uniforms;
+          if (!uniforms) continue;
+          for (const name of names) if (uniforms[name]) uniforms[name].value = webgpuDepthTexture;
+          uniforms.u_screenSize?.value?.copy?.(size);
+          uniforms.u_invProjection?.value?.copy?.(camera.projectionMatrixInverse);
+        }
+      });
+    }
+
+    function measureVisibleSceneExtent(root, target) {
+      let extent = 0;
+      root.updateMatrixWorld(true);
+      root.traverseVisible((object) => {
+        if (!object.isMesh || !object.geometry) return;
+        const geometry = object.geometry;
+        if (!geometry.boundingBox) geometry.computeBoundingBox();
+        const size = geometry.boundingBox?.getSize(new THREE.Vector3());
+        if (!size) return;
+        if (object.name === 'Ground' && size.x > 100 && size.z > 100 && !object.userData.previewGroundOffsetApplied) {
+          object.position.y -= 0.05; object.userData.previewGroundOffsetApplied = true; object.updateMatrixWorld(true);
+        }
+        if (size.x > 100 || size.y > 100 || size.z > 100) return;
+        if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+        if (!geometry.boundingSphere) return;
+        const center = geometry.boundingSphere.center.clone().applyMatrix4(object.matrixWorld);
+        const scale = object.getWorldScale(new THREE.Vector3());
+        const radius = geometry.boundingSphere.radius * Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z));
+        extent = Math.max(extent, center.distanceTo(target) + radius);
+      });
+      return extent;
+    }
+
+    function restoreGodotShaderUniformArrays(root) {
+      const declarationPattern = /\buniform\s+(?:(?:lowp|mediump|highp)\s+)?(vec[234]|mat[34])\s+(\w+)\s*\[\s*(\d+)\s*\]/g;
+      root.traverse((object) => {
+        const materials = Array.isArray(object.material) ? object.material : object.material ? [object.material] : [];
+        for (const material of materials) {
+          if (!material.isShaderMaterial) continue;
+          const shader = String(material.vertexShader || '') + String(material.fragmentShader || '');
+          for (const match of shader.matchAll(declarationPattern)) {
+            const [, type, name, declaredLength] = match;
+            const uniform = material.uniforms?.[name];
+            const value = uniform?.value;
+            const length = Number(declaredLength);
+            if (!Array.isArray(value) || !length) continue;
+            if (type.startsWith('vec')) {
+              const components = Number(type.slice(3));
+              const Vector = components === 2 ? THREE.Vector2 : components === 3 ? THREE.Vector3 : THREE.Vector4;
+              if (components === 3 && /colou?r/i.test(name) && value.length === length && value.every((item) => typeof item === 'number')) {
+                uniform.value = value.map((hex) => new THREE.Color(hex));
+              } else if (value.length === length * components && value.every((item) => typeof item === 'number')) {
+                uniform.value = Array.from({ length }, (_, index) => new Vector().fromArray(value, index * components));
+              } else {
+                uniform.value = value.map((item) => {
+                  if (item?.isVector2 || item?.isVector3 || item?.isVector4 || item?.isColor) return item;
+                  if (Array.isArray(item)) return new Vector().fromArray(item);
+                  const values = components === 2 ? [item?.x ?? 0, item?.y ?? 0]
+                    : components === 3 ? [item?.x ?? 0, item?.y ?? 0, item?.z ?? 0]
+                      : [item?.x ?? 0, item?.y ?? 0, item?.z ?? 0, item?.w ?? 0];
+                  return new Vector().fromArray(values);
+                });
+              }
+            } else {
+              const Matrix = type === 'mat3' ? THREE.Matrix3 : THREE.Matrix4;
+              const components = type === 'mat3' ? 9 : 16;
+              if (value.length === length * components && value.every((item) => typeof item === 'number')) {
+                uniform.value = Array.from({ length }, (_, index) => new Matrix().fromArray(value, index * components));
+              } else if (value.length === length) {
+                uniform.value = value.map((item) => item?.isMatrix3 || item?.isMatrix4 ? item : new Matrix().fromArray(item));
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function sanitizeClassSource(source) {
+      const dataPattern = /const SCENE_DATA = ([\s\S]*?);\nconst ANIMATION_DATA = ([\s\S]*?);\nconst PLAYBACK_DATA = ([\s\S]*?);\nconst PARTICLE_DATA = /;
+      const match = source.match(dataPattern);
+      if (match) {
+        const sceneData = JSON.parse(match[1]);
+        const animationData = JSON.parse(match[2]);
+        const audioUuids = new Set();
+        const isAudioNode = (object) => Boolean(object?.userData?.godotAudio)
+          || /^AudioStreamPlayer(?:2D|3D)?$/.test(object?.name ?? '')
+          || /^AudioStreamPlayer(?:2D|3D)?$/.test(object?.type ?? '');
+        const collectAudioNodes = (object) => {
+          if (!object) return;
+          if (isAudioNode(object) && object.uuid) audioUuids.add(object.uuid);
+          for (const child of object.children ?? []) collectAudioNodes(child);
+        };
+        const pruneAudioNodes = (object) => {
+          if (!object) return;
+          object.children = (object.children ?? []).filter((child) => {
+            if (isAudioNode(child)) {
+              if (child.uuid) audioUuids.add(child.uuid);
+              return false;
+            }
+            pruneAudioNodes(child);
+            return true;
+          });
+        };
+        collectAudioNodes(sceneData.object);
+        pruneAudioNodes(sceneData.object);
+        for (const clip of animationData) {
+          clip.tracks = (clip.tracks ?? []).filter((track) => {
+            const name = String(track.name ?? '');
+            const targetUuid = name.match(/^([0-9a-f-]{36})\./i)?.[1];
+            return !audioUuids.has(targetUuid) && !/(?:^|[/.])AudioStreamPlayer(?:2D|3D)?(?=[:/.]|$)/i.test(name);
+          });
+        }
+        source = source.replace(dataPattern,
+          `const SCENE_DATA = ${JSON.stringify(sceneData)};\nconst ANIMATION_DATA = ${JSON.stringify(animationData)};\nconst PLAYBACK_DATA = ${JSON.stringify(JSON.parse(match[3]))};\nconst PARTICLE_DATA = `);
+      }
+
+      source = source.replace(/const SOURCE_ASSETS = [\s\S]*?;\nconst MISSING_SOURCE_DEPENDENCIES = [\s\S]*?;\n/, '');
+      source = source.replace(/  static sourceScene = .*?;\n  static sourceSceneAssetPath = .*?;\n  static sourceAssets = SOURCE_ASSETS;\n  static missingSourceDependencies = MISSING_SOURCE_DEPENDENCIES;\n\n/, '');
+      source = source.replace(/  static getGodotSourceFiles\(\) \{[\s\S]*?\n  \}\n\n/, '');
+
+      if (!source.includes('function restoreGodotShaderUniformArrays')) {
+        source = source.replace('function decodeBase64Floats(', `${restoreGodotShaderUniformArrays.toString()}\n\nfunction decodeBase64Floats(`);
+      }
+      if (!source.includes('restoreGodotShaderUniformArrays(this.effectRoot)')) {
+        source = source.replace(
+          'this.effectRoot = new THREE.ObjectLoader().parse(SCENE_DATA);',
+          'this.effectRoot = new THREE.ObjectLoader().parse(SCENE_DATA);\n    restoreGodotShaderUniformArrays(this.effectRoot);',
+        );
+      }
+      return source;
+    }
+
+    async function loadClass(files) {
+      error.textContent = '';
+      const selectedFiles = Array.from(files ?? []);
+      const file = selectedFiles.find((candidate) => !/^AbstractVFXMesh(?:\.min)?\.js$/i.test(candidate.name));
+      if (!file) { error.textContent = 'クラスの .js ファイルを選択してください。'; return; }
+      const classSource = await file.text();
+      const requiresRuntime = /from\s*(['"])\.\/AbstractVFXMesh(?:\.min)?\.js\1/.test(classSource);
+      status.textContent = `読み込み中: ${file.name}`;
+      removeEffect();
+      if (activeModuleUrl) URL.revokeObjectURL(activeModuleUrl);
+      try {
+        const runtimeModuleUrl = requiresRuntime ? sharedRuntimeModuleUrl : '';
+        const threeUrl = new URL('/vendor/three/build/three.module.js', location.href).href;
+        const webgpuUrl = new URL('/vendor/three/build/three.webgpu.js', location.href).href;
+        const tslUrl = new URL('/vendor/three/build/three.tsl.js', location.href).href;
+        const source = sanitizeClassSource(classSource)
+          .replace(/(['"])\.\/AbstractVFXMesh(?:\.min)?\.js\1/g, JSON.stringify(runtimeModuleUrl))
+          .replace(/(['"])three\/webgpu\1/g, JSON.stringify(webgpuUrl))
+          .replace(/(['"])three\/tsl\1/g, JSON.stringify(tslUrl))
+          .replace(/(['"])three\1/g, JSON.stringify(threeUrl));
+        activeModuleUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+        const module = await import(activeModuleUrl);
+        const VFXClass = module.default;
+        if (typeof VFXClass !== 'function') throw new Error('JavaScript に default export の VFX class がありません。');
+        const target = VFXClass.rendererTarget || 'WebGLRenderer';
+        await setRenderer(target);
+
+        effect = new VFXClass();
+        scene.add(effect);
+        frameEffect(effect);
+        playing = true;
+        status.textContent = `${file.name}\n${VFXClass.name} · ${target || 'WebGLRenderer'}`;
+        restartButton.disabled = false;
+        window.threeClassPreview = { effect, scene, camera, renderer: activeRenderer, controls };
+        startRenderLoop();
+      } catch (cause) {
+        removeEffect();
+        status.textContent = `読み込めませんでした: ${file.name}`;
+        error.textContent = cause?.stack || String(cause);
+      }
+    }
+
+    function startRenderLoop() {
+      activeRenderer.setAnimationLoop(() => {
+        const delta = Math.min(clock.getDelta(), 0.1) * Number(speedInput.value);
+        if (playing) effect?.update(delta);
+        controls.update();
+        updateCameraClipRange();
+        if (composer) { depthPass.render(activeRenderer, scene, camera); composer.render(); }
+        else if (webgpuPipeline) { updateWebgpuDepthUniforms(); webgpuPipeline.render(); }
+        else activeRenderer.render(scene, camera);
+      });
+    }
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files?.length) loadClass(fileInput.files);
+    });
+    restartButton.addEventListener('click', () => {
+      effect?.play();
+      playing = true;
+      clock.start();
+    });
+    speedInput.addEventListener('input', () => speedValue.textContent = `${Number(speedInput.value).toFixed(2)}×`);
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      activeRenderer?.setSize(innerWidth, innerHeight);
+      composer?.setSize(innerWidth, innerHeight);
+    });
+    addEventListener('pagehide', () => {
+      removeEffect();
+      if (activeModuleUrl) URL.revokeObjectURL(activeModuleUrl);
+      controls?.dispose();
+      composer?.dispose();
+      webgpuPipeline?.dispose();
+      depthPass.dispose();
+      activeRenderer?.dispose();
+    }, { once: true });
+  </script>
+</body>
+</html>

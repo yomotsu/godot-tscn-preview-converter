@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Godot TSCN Preview &amp; Three.js Class Converter</title><style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050505;color:#eaf0ff;font:14px/1.45 system-ui,-apple-system,sans-serif}canvas{display:block;width:100%;height:100%}#panel{max-height:calc(100vh - 36px);overflow:auto;position:fixed;top:18px;left:18px;width:min(390px,calc(100vw - 36px));padding:16px 18px;background:rgba(12,18,30,.88);border:1px solid rgba(176,202,255,.2);border-radius:12px;box-shadow:0 12px 40px #0007;backdrop-filter:blur(12px)}h1{font-size:16px;margin:0 0 4px}#state{color:#aab8d4;font-size:12px;margin-bottom:14px}.row{display:flex;gap:8px;align-items:center;margin:8px 0}select,button{background:#19243a;color:#eaf0ff;border:1px solid #354360;border-radius:6px;padding:7px 9px;font:inherit}select{flex:1;min-width:0}button{cursor:pointer}button:hover{background:#273858}#warnings{max-height:118px;overflow:auto;margin-top:12px;color:#ffcd89;font-size:11px}#hint{position:fixed;right:16px;bottom:14px;color:#97a7c4;font-size:12px;text-shadow:0 1px 4px #000}#error{color:#ff8e9c;white-space:pre-wrap;font-size:12px}label{font-size:12px;color:#aab8d4}#speed{width:98px}
+#folderInfo{font-size:12px;color:#aab8d4}#dropOverlay{display:none;position:fixed;inset:0;border:4px dashed #aac7ff;background:#0a1529df;z-index:10;align-items:center;justify-content:center;font-size:24px;pointer-events:none}body.dragging #dropOverlay{display:flex}#parameters .row{justify-content:space-between}#parameters input[type=number]{width:76px;min-width:0;background:#19243a;color:#eaf0ff;border:1px solid #354360;border-radius:4px;padding:5px}#parameters input[type=color]{width:64px}#parameters label{overflow-wrap:anywhere;max-width:150px}#parameters{max-height:260px;overflow:auto}</style><!-- TERSER_BUNDLE --><script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script></head>
+<body><div id="dropOverlay">エフェクトフォルダ・TSCN・リソースを追加</div><div id="panel"><h1 id="title">Godot TSCN Preview &amp; Three.js Class Converter</h1><div id="folderInfo">エフェクトフォルダ一式をドロップして追加</div><details id="folderWarnings" hidden><summary>フォルダ内の参照問題</summary><div style="max-height:90px;overflow:auto;white-space:pre-wrap;font-size:11px"></div></details><div class="row"><button id="folderButton">フォルダを追加</button><button id="fileButton">ファイルを追加</button><input id="fileInput" type="file" multiple hidden><button id="bundledButton">元のアセット</button><input id="folderInput" type="file" webkitdirectory multiple hidden></div><div class="row"><label for="effect">エフェクト</label><select id="effect"></select></div><div id="state">シーンを読み込み中…</div><div class="row"><select id="clip" disabled><option>アニメーションを読み込み中…</option></select><button id="play" disabled>再生</button></div><div class="row"><label for="speed">再生速度</label><input id="speed" type="range" min="0.25" max="2" step="0.05" value="1"><span id="speedValue">1.00×</span><button id="restart" disabled>最初から</button></div><div class="row"><label><input id="loop" type="checkbox" checked> 繰り返し再生</label></div><details id="customization"><summary>カスタマイズ</summary><div class="row"><label for="hueShift">全体の Hue</label><input id="hueShift" type="range" min="-180" max="180" step="1" value="0" aria-label="表示中のアセット全体の色相" style="flex:1;min-width:0;width:100px"><output id="hueValue" for="hueShift" style="font-size:12px;white-space:nowrap">0°</output><button id="applyHue">色に適用</button><button id="resetHue">Hue を戻す</button></div><div class="row"><select id="parameterTarget" aria-label="編集するノード"></select><button id="resetParameters">戻す</button></div><div id="parameters"></div><p id="parameterHint" style="font-size:11px;color:#aab8d4">Hue は色の値を調整し、「色に適用」で確定します。画像のピクセルやシェーダー内の固定色は変更しません。色は sRGB、ベクトルは各成分を入力します。編集した値はアニメーションより優先されます。画像は PNG・JPEG・WebP などを選択できます。</p></details><details><summary>音声の差し替え</summary><div class="row"><select id="audioTarget" aria-label="音声ノード"></select></div><div class="row"><input id="audioFile" type="file" accept="audio/*" style="width:100%"></div><div id="audioName" style="font-size:11px"></div><div class="row"><label>音量<input id="audioVolume" type="number" min="0" step="0.1" value="1" style="width:65px"></label><label>速度<input id="audioPitch" type="number" min="0.01" step="0.1" value="1" style="width:65px"></label><label><input id="audioLoop" type="checkbox">ループ</label></div><div class="row"><button id="audioPlay">音声を再生</button><button id="audioStop">停止</button><button id="audioReset">音声を戻す</button></div><p style="font-size:11px;color:#aab8d4">ブラウザがデコードできる音声形式に対応。再生操作で音声を有効にします。</p></details><div id="warnings"></div><div id="error"></div></div><div id="hint">ドラッグで視点移動・ホイールでズーム</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TSCNLoader, GodotOutputPass, GodotLocalProject, GodotEnvironmentConverter, GodotDepthPass, TSCNParser } from '../index.ts';
+import { effects as bundledEffects } from './effects.js';
+import { collectDroppedFiles } from './folder-drop.js';
+import { getPreviewCameraClipRange, getPreviewFogScale } from './camera-clip-range.js';
+import { exportThreeClass } from './three-class/export.js';
+let effects=bundledEffects,localProject;
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.3;document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x050505);scene.fog=new THREE.FogExp2(0x050505,.022);
+const ambient=new THREE.HemisphereLight(0xffffff,0x202020,.65);scene.add(ambient);const key=new THREE.DirectionalLight(0xffffff,1);key.position.set(5,9,4);scene.add(key);
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,.01,120);camera.position.set(5,4,8);const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.minDistance=.5;let cameraSceneExtent=0;
+const depthPass=new GodotDepthPass();
+const composer=new EffectComposer(renderer);composer.addPass(new RenderPass(scene,camera));const glow=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.2,.3,1);glow.enabled=false;composer.addPass(glow);const output=new GodotOutputPass(1.3);composer.addPass(output);
+// A neutral checker floor makes scale, smoke silhouettes and light flashes visible.
+const tiles=document.createElement('canvas');tiles.width=tiles.height=128;const ctx=tiles.getContext('2d');ctx.fillStyle='#535353';ctx.fillRect(0,0,128,128);ctx.fillStyle='#383838';ctx.fillRect(0,0,64,64);ctx.fillRect(64,64,64,64);
+const checker=new THREE.CanvasTexture(tiles);checker.colorSpace=THREE.SRGBColorSpace;checker.wrapS=checker.wrapT=THREE.RepeatWrapping;checker.repeat.set(250,250);checker.anisotropy=renderer.capabilities.getMaxAnisotropy();
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({map:checker,roughness:.5,metalness:0}));floor.rotation.x=-Math.PI/2;floor.position.y=-.01;scene.add(floor);
+// Soft contact shading also stays visible once the fire has faded.
+const shadowCanvas=document.createElement('canvas');shadowCanvas.width=shadowCanvas.height=128;const sc=shadowCanvas.getContext('2d'),gradient=sc.createRadialGradient(64,64,5,64,64,64);gradient.addColorStop(0,'rgba(0,0,0,.5)');gradient.addColorStop(1,'rgba(0,0,0,0)');sc.fillStyle=gradient;sc.fillRect(0,0,128,128);
+const contact=new THREE.Mesh(new THREE.PlaneGeometry(4,4),new THREE.MeshBasicMaterial({map:new THREE.CanvasTexture(shadowCanvas),transparent:true,depthWrite:false}));contact.rotation.x=-Math.PI/2;contact.position.y=.002;scene.add(contact);
+const state=document.querySelector('#state'),warnings=document.querySelector('#warnings'),clipSelect=document.querySelector('#clip'),playButton=document.querySelector('#play'),restartButton=document.querySelector('#restart'),speed=document.querySelector('#speed'),speedValue=document.querySelector('#speedValue'),error=document.querySelector('#error');let mixer,actions=[],clock=new THREE.Timer(),result,paused=false;clock.connect(document);
+const effectSelect=document.querySelector('#effect'),title=document.querySelector('#title'),loopToggle=document.querySelector('#loop');
+function refreshCatalog(){effectSelect.innerHTML='';for(const item of [...effects,{id:'all',name:'すべて並べて比較'}]){const option=document.createElement('option');option.value=item.id;option.textContent=item.name;effectSelect.append(option);}
+effectSelect.value=effects.find(e=>e.id.includes('ground'))?.id||effects[0]?.id;}refreshCatalog();
+let loader=createBundledLoader();
+const loaded=new Map();let active=[],requestId=0;
+async function getEffect(item){
+ if(!loaded.has(item.id))loaded.set(item.id,loader.loadAsync(item.path).catch(e=>{loaded.delete(item.id);throw e;}));
+ return loaded.get(item.id);
+}
+async function selectEffect(id){
+ const token=++requestId;effectSelect.value=id;state.textContent='シーンを読み込み中…';warnings.textContent='変換を確認中…';error.textContent='';effectSelect.disabled=true;refreshClassExportButtons();
+ try{
+  const items=id==='all'?effects.filter(e=>e.effect!==false):effects.filter(e=>e.id===id);
+  if(!items.length)throw new Error('プレビューする .tscn がありません');
+  const results=await Promise.all(items.map(getEffect));if(token!==requestId)return;
+  for(const entry of active){entry.result.audio.stop();entry.mixer.stopAllAction();scene.remove(entry.result.scene);}active=[];
+  clipSelect.innerHTML='';
+  for(let index=0;index<results.length;index++){
+   const loadedResult=results[index];loadedResult.scene.position.set(id==='all'?(index-(results.length-1)/2)*9:0,items[index].id.includes('air')?2:0,0);scene.add(loadedResult.scene);
+   const animationMixer=new THREE.AnimationMixer(loadedResult.scene),clipActions=[];
+   for(const clip of loadedResult.animations){const action=animationMixer.clipAction(clip);const loop=clip.name==='open'?0:loopToggle.checked&&clip.name!=='stop'?1:clip.userData.godotLoopMode;if(loop===0){action.setLoop(THREE.LoopOnce,1);action.clampWhenFinished=true;}else if(loop===2)action.setLoop(THREE.LoopPingPong,Infinity);else action.setLoop(THREE.LoopRepeat,Infinity);clipActions.push(action);}
+   clipActions.sort((a,b)=>{const rank=clip=>clip.duration<=.001&&(clip.name==='main'||clip.name.startsWith('Animation_'))?3:clip.name==='main'||clip.name==='open'||clip.name==='oneshot'?0:clip.name==='close'||clip.name==='stop'?2:1;return rank(a.getClip())-rank(b.getClip());});
+   animationMixer.timeScale=Number(speed.value);playPrimaryActions(clipActions);animationMixer.update(0);loadedResult.updateTime(0);active.push({result:loadedResult,mixer:animationMixer,actions:clipActions});
+  }
+  ({result,mixer,actions}=active[0]);
+  for(const action of actions){const clip=action.getClip();const option=document.createElement('option');option.value=String(clipSelect.options.length);option.textContent=(result.environment?(clip.userData.godotRootName+' / '):'')+clip.name+' ('+clip.duration.toFixed(2)+'s)';clipSelect.append(option);}
+  const environment=results.find(r=>r.environment)?.environment;
+  floor.visible=!environment;ambient.visible=key.visible=!environment;
+  scene.background=new THREE.Color(0x050505);scene.environment=null;scene.fog=new THREE.FogExp2(0x050505,.022);scene.userData.godotPreviewFogScale=1;delete scene.userData.godotEnvironment;scene.backgroundIntensity=scene.environmentIntensity=1;scene.backgroundRotation.set(0,0,0);scene.environmentRotation.set(0,0,0);
+  output.uniforms.exposure.value=environment?.exposure??1.3;glow.enabled=Boolean(environment?.glow);glow.strength=environment?.glowBloom??.2;
+  if(environment)GodotEnvironmentConverter.apply(scene,environment);
+  const overview=id==='all',nuke=id.includes('nuke'),height=id.includes('air')?2:0;
+  controls.target.set(0,overview?3:nuke?4:.35+height);camera.position.set(overview?17:nuke?14:5,overview?9:nuke?10:3.3+height,overview?32:nuke?36:13);controls.update();
+  if(localProject){const bounds=new THREE.Box3();for(const entry of active){const savedSpeed=entry.mixer.timeScale;entry.mixer.timeScale=1;entry.mixer.setTime(.6);entry.result.updateTime(.6);entry.result.scene.updateMatrixWorld(true);const ownBounds=new THREE.Box3();const fitRoots=[];entry.result.scene.traverse(o=>{if(o.userData.godotEffectController)fitRoots.push(o);});for(const fitRoot of fitRoots.length?fitRoots:[entry.result.scene])fitRoot.traverseVisible(o=>{if(o.isMesh&&o.geometry.drawRange.count!==0)ownBounds.expandByObject(o);});if(!ownBounds.isEmpty()){const lift=entry.result.environment?0:Math.max(0,-ownBounds.min.y);entry.result.scene.position.y+=lift;ownBounds.translate(new THREE.Vector3(0,lift,0));bounds.union(ownBounds);}entry.mixer.setTime(0);entry.result.updateTime(0);entry.mixer.timeScale=savedSpeed;}if(!bounds.isEmpty()){const center=bounds.getCenter(new THREE.Vector3()),size=bounds.getSize(new THREE.Vector3()),radius=Math.max(size.length()*.5,1.5);controls.target.copy(center);camera.position.copy(center).add(new THREE.Vector3(radius*(environment?1.6:.7),radius*.35,radius*(environment?2.0:2.4)));camera.updateProjectionMatrix();controls.update();}}
+
+  cameraSceneExtent=measureVisibleSceneExtent(results,controls.target);controls.maxDistance=Math.max(24,cameraSceneExtent*8);controls.update();updateCameraClipRange();
+  contact.visible=!overview&&!environment;contact.position.x=0;contact.scale.setScalar(nuke?2:1);
+  title.textContent=overview?'すべてのエフェクト':items[0].name;clipSelect.disabled=overview||!actions.length;playButton.disabled=restartButton.disabled=false;paused=false;playButton.textContent='一時停止';
+  const messages=[...(localProject?.warnings??[]).filter(w=>items.some(item=>w.startsWith(item.id+':'))),...results.flatMap((r,i)=>r.warnings.map(w=>items[i].name+': '+w))];warnings.innerHTML=messages.length?'<b>変換時の警告</b><br>'+messages.map(w=>'• '+escapeHtml(w)).join('<br>'):'変換警告なし';
+  state.textContent='読み込み完了 · '+results.length+' エフェクト · '+results.reduce((n,r)=>n+r.animations.length,0)+' アニメーション · シェーダー／粒子を再生中';clock.reset();
+  window.preview={result,scene,camera,controls,renderer,composer,mixer,active,selectEffect};
+  refreshParameters();refreshAudio();
+ }catch(e){console.error(e);state.textContent='読み込みに失敗しました';warnings.textContent='読み込み失敗のため変換結果を確認できません';error.textContent=e?.stack||String(e);}finally{if(token===requestId)effectSelect.disabled=false;refreshClassExportButtons();}
+}
+effectSelect.addEventListener('change',()=>selectEffect(effectSelect.value));
+loopToggle.addEventListener('change',()=>{for(const entry of active)entry.actions.forEach((a,i)=>{const clip=a.getClip(),mode=clip.name==='open'?0:loopToggle.checked&&clip.name!=='stop'?1:clip.userData.godotLoopMode;a.setLoop(mode===0?THREE.LoopOnce:mode===2?THREE.LoopPingPong:THREE.LoopRepeat,mode===0?1:Infinity);a.clampWhenFinished=mode===0;});});
+const parameterTarget=document.querySelector('#parameterTarget'),parameterFields=document.querySelector('#parameters');
+const hueShift=document.querySelector('#hueShift'),hueValue=document.querySelector('#hueValue'),resetHue=document.querySelector('#resetHue'),applyHue=document.querySelector('#applyHue');
+function refreshHueShift(){
+ const values=active.map(entry=>entry.result.customization.getHueShift());
+ hueShift.disabled=resetHue.disabled=applyHue.disabled=!values.length;hueShift.value=String(values[0]??0);
+ hueValue.textContent=values.some(value=>value!==values[0])?'個別設定':`${values[0]??0}°`;
+}
+hueShift.oninput=()=>{
+ const degrees=Number(hueShift.value);for(const entry of active)entry.result.customization.setHueShift(degrees);
+ hueValue.textContent=`${degrees}°`;renderParameters();
+};
+applyHue.onclick=()=>{for(const entry of active)entry.result.customization.applyHueShift();refreshHueShift();renderParameters();};
+resetHue.onclick=()=>{for(const entry of active)entry.result.customization.resetHueShift();refreshHueShift();renderParameters();};
+let parameterTargets=[];
+function refreshParameters(){
+ refreshHueShift();
+ parameterTargets=[];parameterTarget.replaceChildren();
+ active.forEach((entry,index)=>{for(const target of new Set(entry.result.customization.parameters.map(p=>p.target))){const option=document.createElement('option');option.value=String(parameterTargets.length);option.textContent=(active.length>1?`エフェクト ${index+1} / `:'')+target;parameterTargets.push({entry,target});parameterTarget.append(option);}});
+ parameterTarget.disabled=!parameterTargets.length;document.querySelector('#resetParameters').disabled=!parameterTargets.length;renderParameters();
+}
+function renderParameters(){
+ parameterFields.replaceChildren();const selected=parameterTargets[Number(parameterTarget.value)];
+ if(!selected){parameterFields.textContent='編集可能なシェーダーパラメータはありません';return;}
+ const {entry,target}=selected;
+ for(const parameter of entry.result.customization.parameters.filter(p=>p.target===target)){
+  const row=document.createElement('div');row.className='row';const label=document.createElement('label');label.textContent=parameter.name;row.append(label);
+  if(parameter.type==='texture'){
+    const field=document.createElement('input');field.type='file';field.accept='image/*';field.style.width='170px';field.setAttribute('aria-label',parameter.name+' 画像');const status=document.createElement('span');status.style.fontSize='10px';status.textContent=parameter.value;
+    field.onchange=async()=>{const file=field.files[0];if(!file)return;field.disabled=true;try{await entry.result.customization.setTexture(parameter.id,file,'/godot/custom/'+file.name);status.textContent=file.name;error.textContent='';}catch(e){error.textContent='画像を読み込めませんでした: '+e;}finally{field.disabled=false;}};
+    row.append(field);parameterFields.append(row,status);continue;
+  }
+  const values=Array.isArray(parameter.value)?parameter.value:[parameter.value];const inputs=[];
+  values.forEach((value,index)=>{const input=document.createElement('input');inputs.push(input);input.type=parameter.type==='boolean'?'checkbox':parameter.type==='color'?'color':'number';input.step='any';input.setAttribute('aria-label',parameter.name+(parameter.type==='vector'?` ${['X','Y','Z','W'][index]}`:''));input.value=String(value);if(parameter.type==='boolean')input.checked=value;row.append(input);input.oninput=()=>{
+    const value=parameter.type==='boolean'?input.checked:parameter.type==='color'?input.value:parameter.type==='vector'?inputs.map(i=>i.value===''?NaN:Number(i.value)):input.value===''?NaN:Number(input.value);
+    try{entry.result.customization.setParameter(parameter.id,value);input.setCustomValidity('');error.textContent='';}catch(e){input.setCustomValidity('有効な値を入力してください');}
+  };});label.htmlFor=inputs[0].id=`parameter-${parameterFields.children.length}`;parameterFields.append(row);
+ }
+}
+parameterTarget.onchange=renderParameters;
+document.querySelector('#resetParameters').onclick=()=>{const entry=parameterTargets[Number(parameterTarget.value)]?.entry;entry?.result.customization.reset();refreshHueShift();renderParameters();};
+const classExportRow=document.createElement('div');classExportRow.className='row';
+const exportWebGLButton=document.createElement('button');exportWebGLButton.textContent='WebGL class を書き出す';
+const exportWebGPUButton=document.createElement('button');exportWebGPUButton.textContent='WebGPU class を書き出す';
+classExportRow.append(exportWebGLButton,exportWebGPUButton);document.querySelector('#warnings').before(classExportRow);
+function refreshClassExportButtons(){const disabled=active.length!==1||effectSelect.value==='all'||effectSelect.disabled;exportWebGLButton.disabled=exportWebGPUButton.disabled=disabled;}
+let classExportBusy=false;
+async function runClassExport(target,button){if(classExportBusy||active.length!==1)return;classExportBusy=true;exportWebGLButton.disabled=exportWebGPUButton.disabled=true;const label=button.textContent;button.textContent='生成中…';error.textContent='';try{const effect=effects.find(item=>item.id===effectSelect.value);if(!effect)throw new Error('書き出すエフェクトを選択してください');const entry=active[0];let selectedActions;if(entry.result.environment){const roots=new Set();selectedActions=entry.actions.filter(action=>{const root=action.getClip().userData.godotRootUUID??'root';if(roots.has(root))return false;roots.add(root);return true;});}else selectedActions=[entry.actions[Number(clipSelect.value)]].filter(Boolean);const output=await exportThreeClass({target,effect,entry,actions:selectedActions});error.textContent=`${output.fileName}（${(output.bytes/1024/1024).toFixed(1)} MB）と ${output.minifiedFileName}（${(output.minifiedBytes/1024/1024).toFixed(1)} MB）を保存しました`; error.textContent += '。dist/three-class/AbstractVFXMesh.min.js をクラスと同じフォルダーに置いてください'; }catch(e){console.error(e);error.textContent=e?.stack||String(e);}finally{classExportBusy=false;button.textContent=label;refreshClassExportButtons();}}
+exportWebGLButton.onclick=()=>runClassExport('webgl',exportWebGLButton);
+exportWebGPUButton.onclick=()=>runClassExport('webgpu',exportWebGPUButton);
+refreshClassExportButtons();
+let audioEntries=[],audioListener;
+const audioTarget=document.querySelector('#audioTarget');
+function refreshAudio(){audioEntries=[];audioTarget.replaceChildren();active.forEach((entry,index)=>{for(const target of entry.result.audio.targets){const option=document.createElement('option');option.value=String(audioEntries.length);option.textContent=(active.length>1?`エフェクト ${index+1} / `:'')+target.name;audioEntries.push({entry,target});audioTarget.append(option);}});for(const id of ['audioTarget','audioFile','audioVolume','audioPitch','audioLoop','audioPlay','audioStop','audioReset'])document.getElementById(id).disabled=!audioEntries.length;refreshAudioFields();}
+function refreshAudioFields(){const target=audioEntries[Number(audioTarget.value)]?.target;document.querySelector('#audioName').textContent=target?.path||'音声ファイル未設定';document.querySelector('#audioVolume').value=target?.volume??1;document.querySelector('#audioPitch').value=target?.pitch??1;document.querySelector('#audioLoop').checked=target?.loop??false;}
+audioTarget.onchange=refreshAudioFields;
+document.querySelector('#audioFile').onchange=async event=>{const selected=audioEntries[Number(audioTarget.value)],file=event.target.files[0];if(!selected||!file)return;event.target.disabled=true;try{if(!audioListener){audioListener=new THREE.AudioListener();camera.add(audioListener);}selected.entry.result.audio.setListener(audioListener);await selected.entry.result.audio.setAudio(selected.target.id,file,'/godot/custom/'+file.name);await selected.entry.result.audio.play(selected.target.id);refreshAudioFields();error.textContent='';}catch(e){error.textContent='音声を読み込めませんでした: '+e;}finally{event.target.value='';event.target.disabled=false;}};
+for(const id of ['audioVolume','audioPitch','audioLoop'])document.getElementById(id).oninput=()=>{const selected=audioEntries[Number(audioTarget.value)];if(!selected)return;try{selected.entry.result.audio.setSettings(selected.target.id,{volume:Number(document.querySelector('#audioVolume').value),pitch:Number(document.querySelector('#audioPitch').value),loop:document.querySelector('#audioLoop').checked});error.textContent='';}catch(e){error.textContent=String(e);}};
+document.querySelector('#audioPlay').onclick=()=>{const selected=audioEntries[Number(audioTarget.value)];selected?.entry.result.audio.play(selected.target.id).catch(e=>error.textContent=String(e));};
+document.querySelector('#audioStop').onclick=()=>audioEntries[Number(audioTarget.value)]?.entry.result.audio.stop();
+document.querySelector('#audioReset').onclick=()=>{audioEntries[Number(audioTarget.value)]?.entry.result.audio.reset();refreshAudioFields();};
+await selectEffect(effectSelect.value);
+function playPrimaryActions(actions){const roots=new Set();for(const action of actions){const clip=action.getClip(),root=clip.userData.godotRootUUID??'root';if(roots.has(root))continue;roots.add(root);action.paused=false;action.reset().play();}}
+function escapeHtml(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+clipSelect.addEventListener('change',()=>{paused=false;actions.forEach((a,i)=>{a.stop();if(i===Number(clipSelect.value)){a.reset().play();mixer.setTime(0);result.updateTime(0);playButton.textContent='一時停止';}})});
+playButton.addEventListener('click',()=>{paused=!paused;for(const entry of active){for(const a of entry.actions)a.paused=paused;if(paused)entry.result.audio.pause();else entry.result.audio.resume();}playButton.textContent=paused?'再生':'一時停止';});
+restartButton.addEventListener('click',()=>{paused=false;for(const entry of active){entry.mixer.stopAllAction();const a=entry.actions[active.length===1?Number(clipSelect.value):0];if(entry.result.environment)playPrimaryActions(entry.actions);else if(a){a.paused=false;a.reset().play();}entry.mixer.timeScale=Number(speed.value);entry.mixer.setTime(0);entry.result.updateTime(0);entry.result.audio.play().catch(e=>error.textContent=String(e));}playButton.textContent='一時停止';clock.reset();});
+speed.addEventListener('input',()=>{speedValue.textContent=Number(speed.value).toFixed(2)+'×';for(const entry of active)entry.mixer.timeScale=Number(speed.value)});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight)});
+let bundledFilesPromise;
+async function getBundledFiles(){
+ if(!bundledFilesPromise)bundledFilesPromise=(async()=>{
+  const resourceLoader=createBundledLoader(),files=new Map(),parser=new TSCNParser();
+  async function collect(path){
+   if(files.has(path))return;files.set(path,null);
+   const bytes=await resourceLoader.resourceResolver.loadArrayBuffer(path);files.set(path,{path:path.slice(6),file:new Blob([bytes])});
+   if(/\.(tscn|tres)$/.test(path)){const text=new TextDecoder().decode(bytes),parsed=path.endsWith('.tscn')?parser.parse(text):parser.parseResource(text);for(const resource of parsed.externalResources){const dependency=resource.attributes.path;if(typeof dependency==='string'&&dependency.startsWith('res://'))await collect(dependency);}}
+  }
+  for(const effect of bundledEffects)await collect(effect.path);
+  return [...files.values()];
+ })().catch(e=>{bundledFilesPromise=undefined;throw e;});
+ return bundledFilesPromise;
+}
+async function replaceProject(files){
+ const previousSelection=effectSelect.value;
+ const previousIds=new Set(effects.flatMap(e=>[e.id,e.path.startsWith('res://')?e.path.slice(6):e.id]));
+ let next;
+ if(files){
+  if(localProject)next=await localProject.append(files);
+  else {const base=await GodotLocalProject.create(await getBundledFiles(),undefined,undefined,true);try{next=await base.append(files);}finally{base.dispose();}}
+ }
+ if(next&&!next.scenes.length){next.dispose();throw new Error('フォルダ内に .tscn が見つかりません');}
+ ++requestId;for(const entry of active){entry.result.audio.stop();entry.mixer.stopAllAction();scene.remove(entry.result.scene);}active=[];
+ const old=localProject;loader.clearCache();const geometries=new Set(),materials=new Set(),textures=new Set();for(const pending of loaded.values()){const r=await pending.catch(()=>undefined);r?.customization.dispose();r?.audio.dispose();r?.scene.traverse(o=>{if(o.geometry)geometries.add(o.geometry);for(const m of Array.isArray(o.material)?o.material:o.material?[o.material]:[])materials.add(m);});}for(const g of geometries)g.dispose();for(const m of materials){for(const v of Object.values(m))if(v?.isTexture)textures.add(v);for(const [name,u] of Object.entries(m.uniforms??{}))if(u.value?.isTexture&&!m.userData.godotDepthUniforms?.includes(name))textures.add(u.value);m.dispose();}for(const t of textures)t.dispose();loaded.clear();old?.dispose();
+ localProject=next;effects=next?next.scenes.map(s=>({...s,effect:next.scenes.some(e=>e.effect)?s.effect:true})):bundledEffects;
+ loader=next?new TSCNLoader({resourceMap:next.resourceMap,fetcher:next.fetcher,resourceMapResolver:(path,ownerUrl)=>next.resolveResourcePath(path,ownerUrl)}):createBundledLoader();refreshCatalog();
+ document.querySelector('#folderInfo').textContent=next?`${next.files.length} ファイル · ${effects.length} シーン · ドロップで追加できます`:'エフェクトフォルダ一式をドロップして追加';
+ const folderWarnings=document.querySelector('#folderWarnings');folderWarnings.hidden=!next?.warnings.length;folderWarnings.querySelector('div').textContent=(next?.warnings??[]).join('\n');folderWarnings.querySelector('summary').textContent='フォルダ内の参照問題 '+(next?.warnings.length??0)+' 件';
+ const added=next?.scenes.find(s=>!previousIds.has(s.id));
+ await selectEffect(added?.id??(next?.scenes.some(s=>s.id===previousSelection)?previousSelection:effectSelect.value));
+}
+
+function measureVisibleSceneExtent(results,target){
+ let extent=0;
+ for(const entry of results){
+  entry.scene.updateMatrixWorld(true);
+  entry.scene.traverseVisible(object=>{
+   if(!object.isMesh||!object.geometry)return;
+   const geometry=object.geometry;
+   if(!geometry.boundingBox)geometry.computeBoundingBox();
+   const box=geometry.boundingBox;if(!box)return;
+   const size=box.getSize(new THREE.Vector3());
+   // Keep imported showcase floors below the preview checker to avoid depth fighting.
+   if(object.name==='Ground'&&size.x>100&&size.z>100&&!object.userData.previewGroundOffsetApplied){object.position.y-=.05;object.userData.previewGroundOffsetApplied=true;object.updateMatrixWorld(true);}
+   if(size.x>100||size.y>100||size.z>100)return;
+   if(!geometry.boundingSphere)geometry.computeBoundingSphere();
+   const sphere=geometry.boundingSphere;if(!sphere)return;
+   const center=sphere.center.clone().applyMatrix4(object.matrixWorld);
+   const scale=object.getWorldScale(new THREE.Vector3());
+   const radius=sphere.radius*Math.max(Math.abs(scale.x),Math.abs(scale.y),Math.abs(scale.z));
+   extent=Math.max(extent,center.distanceTo(target)+radius);
+  });
+ }
+ return extent;
+}
+function updateCameraClipRange(){
+ const distance=camera.position.distanceTo(controls.target);
+ const {near,far}=getPreviewCameraClipRange(distance,cameraSceneExtent);
+ if(Math.abs(camera.near-near)>1e-5||Math.abs(camera.far-far)>1e-3){camera.near=near;camera.far=far;camera.updateProjectionMatrix();}
+ updatePreviewFog(distance+cameraSceneExtent);
+}
+function updatePreviewFog(viewDistance){
+ const environment=scene.userData.godotEnvironment;
+ const surfaceDensity=environment?(environment.fogDensity||environment.volumetricDensity):.022;
+ const fogDensity=environment?.fogDensity??0,volumetricDensity=environment?.volumetricDensity??0;
+ const scale=environment?getPreviewFogScale(viewDistance,fogDensity,volumetricDensity):getPreviewFogScale(viewDistance,surfaceDensity,0);
+ scene.userData.godotPreviewFogScale=scale;
+ if(scene.fog)scene.fog.density=surfaceDensity*scale;
+}
+function createBundledLoader(){
+ const prefix='res://assets/BinbunVFX_Vol2/examples/assets/';
+ return new TSCNLoader({resourcePath:'/godot/',resourceMapResolver:path=>path.startsWith(prefix)?'/examples/assets/'+path.slice(prefix.length):undefined});
+}
+let importBusy=false;
+async function importFiles(files){if(importBusy)return;importBusy=true;document.querySelector('#folderButton').disabled=document.querySelector('#fileButton').disabled=document.querySelector('#bundledButton').disabled=true;state.textContent='フォルダを解析中…';warnings.textContent='変換を確認中…';error.textContent='';try{await replaceProject(files);}catch(e){state.textContent='フォルダを読み込めませんでした';warnings.textContent='フォルダを読み取れなかったため変換を開始できません';error.textContent=String(e);}finally{importBusy=false;document.querySelector('#folderButton').disabled=document.querySelector('#fileButton').disabled=document.querySelector('#bundledButton').disabled=false;document.body.classList.remove('dragging');}}
+const folderInput=document.querySelector('#folderInput');document.querySelector('#folderButton').onclick=()=>folderInput.click();folderInput.onchange=()=>{if(folderInput.files.length)importFiles([...folderInput.files].map(file=>({path:file.webkitRelativePath||file.name,file})));folderInput.value='';};document.querySelector('#bundledButton').onclick=()=>importFiles();
+const fileInput=document.querySelector('#fileInput');document.querySelector('#fileButton').onclick=()=>fileInput.click();fileInput.onchange=()=>{if(fileInput.files.length)importFiles([...fileInput.files].map(file=>({path:file.name,file})));fileInput.value='';};
+let dragDepth=0;addEventListener('dragenter',e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();dragDepth++;document.body.classList.add('dragging');}});addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();e.dataTransfer.dropEffect='copy';}});addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;document.body.classList.remove('dragging');}});addEventListener('drop',e=>{e.preventDefault();dragDepth=0;document.body.classList.remove('dragging');state.textContent='フォルダを読み取り中…';warnings.textContent='変換を確認中…';error.textContent='';collectDroppedFiles(e.dataTransfer).then(importFiles).catch(e=>{state.textContent='フォルダを読み込めませんでした';warnings.textContent='フォルダを読み取れなかったため変換を開始できません';error.textContent=String(e);});});
+window.importGodotFiles=importFiles;
+function animate(){requestAnimationFrame(animate);clock.update();const dt=clock.getDelta();for(const entry of active){if(paused)continue;entry.mixer.update(Math.min(dt,.1));entry.result.updateTime(entry.mixer.time);}controls.update();updateCameraClipRange();depthPass.render(renderer,scene,camera);composer.render();}clock.reset();animate();
+</script></body></html>

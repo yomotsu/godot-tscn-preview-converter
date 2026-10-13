@@ -1,0 +1,29 @@
+{
+  "name": "godot-tscn-preview-converter",
+  "version": "0.1.0",
+  "description": "Preview Godot 4 TSCN scenes and convert them for use with three.js",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/generate-preview-manifest.mjs && vite --host 127.0.0.1 --port 5173 --strictPort",
+    "pretest": "node scripts/minify-vfx-runtime.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "node scripts/generate-preview-manifest.mjs && npm run typecheck && vite build",
+    "minify:runtime": "node scripts/minify-vfx-runtime.mjs",
+    "preview": "npm run build && vite preview --host 127.0.0.1 --port 5173 --strictPort"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.4",
+    "@types/node": "^26.6.5"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}
